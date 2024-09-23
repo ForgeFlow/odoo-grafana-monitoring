@@ -1,0 +1,137 @@
+// https://grafana.com/docs/alloy/latest/reference/config-blocks/livedebugging/
+
+livedebugging {
+    enabled = true
+}
+
+// postgres
+// https://grafana.com/docs/grafana-cloud/monitor-infrastructure/integrations/integration-reference/integration-postgres/
+
+prometheus.exporter.postgres "integration_postgres" {
+    data_source_names = [env("POSTGRES_URL")]
+}
+
+discovery.relabel "integration_postgres" {
+    targets = prometheus.exporter.postgres.integration_postgres.targets
+    rule {
+        target_label = "job"
+        replacement  = "integrations/postgres_exporter"
+    }
+}
+
+prometheus.scrape "integration_postgres" {
+    targets    = discovery.relabel.integration_postgres.output
+    forward_to = [prometheus.relabel.integration_postgres.receiver]
+    job_name   = "integrations/postgres_exporter"
+}
+
+prometheus.relabel "integration_postgres" {
+  forward_to = [prometheus.remote_write.default.receiver]
+  rule {
+        target_label = "instance"
+        replacement  = constants.hostname
+  }
+  rule {
+    source_labels = ["__name__"]
+    regex         = "pg_settings_max_connections|pg_settings_superuser_reserved_connections|pg_stat_activity_count|pg_stat_activity_max_tx_duration|pg_stat_bgwriter_buffers_alloc_total|pg_stat_bgwriter_buffers_backend_fsync_total|pg_stat_bgwriter_buffers_backend_total|pg_stat_bgwriter_buffers_checkpoint_total|pg_stat_bgwriter_buffers_clean_total|pg_stat_database_blks_hit|pg_stat_database_blks_read|pg_stat_database_conflicts|pg_stat_database_deadlocks|pg_stat_database_numbackends|pg_stat_database_tup_deleted|pg_stat_database_tup_fetched|pg_stat_database_tup_inserted|pg_stat_database_tup_returned|pg_stat_database_tup_updated|pg_stat_database_xact_commit|pg_stat_database_xact_rollback|pg_up|up"
+    action        = "keep"
+  }
+}
+
+prometheus.remote_write "default" {
+  endpoint {
+    url = env("PROMETHEUS_URL")
+    basic_auth {
+      username = env("PROMETHEUS_USERNAME")
+      password = env("PROMETHEUS_PASSWORD")
+    }
+  }
+}
+
+// traefik
+// https://grafana.com/docs/grafana-cloud/monitor-infrastructure/integrations/integration-reference/integration-traefik/
+
+discovery.relabel "integration_traefik" {
+	targets = [{
+		__address__ = "traefik:8080",
+	}]
+	rule {
+		target_label = "instance"
+		replacement  = constants.hostname
+	}
+}
+
+prometheus.scrape "integration_traefik" {
+	targets    = discovery.relabel.integration_traefik.output
+	forward_to = [prometheus.remote_write.default.receiver]
+	job_name   = "integrations/traefik"
+}
+
+// otel
+// https://grafana.com/docs/alloy/latest/collect/opentelemetry-data/
+
+otelcol.receiver.otlp "otel" {
+    grpc { }
+    http { }
+    output {
+        metrics = [otelcol.processor.resourcedetection.otel.input]
+        logs    = [otelcol.processor.resourcedetection.otel.input]
+        traces  = [otelcol.processor.resourcedetection.otel.input]
+    }
+}
+
+otelcol.processor.resourcedetection "otel" {
+    detectors = ["env", "system"]
+    system {
+        hostname_sources = ["os"]
+    }
+    output {
+        metrics = [otelcol.processor.transform.otel.input]
+        logs    = [otelcol.processor.batch.otel.input]
+        traces  = [
+            otelcol.processor.batch.otel.input,
+            otelcol.connector.host_info.otel.input,
+        ]
+    }
+}
+
+otelcol.connector.host_info "otel" {
+    host_identifiers = ["host.name"]
+    output {
+        metrics = [otelcol.processor.batch.otel.input]
+    }
+}
+
+otelcol.processor.transform "otel" {
+    error_mode = "ignore"
+    metric_statements {
+        context    = "datapoint"
+        statements = [
+            "set(attributes[\"deployment.environment\"], resource.attributes[\"deployment.environment\"])",
+            "set(attributes[\"service.version\"], resource.attributes[\"service.version\"])",
+        ]
+    }
+    output {
+        metrics = [otelcol.processor.batch.otel.input]
+    }
+}
+
+otelcol.processor.batch "otel" {
+    output {
+        metrics = [otelcol.exporter.otlphttp.default.input]
+        logs    = [otelcol.exporter.otlphttp.default.input]
+        traces  = [otelcol.exporter.otlphttp.default.input]
+    }
+}
+
+otelcol.exporter.otlphttp "default" {
+    client {
+        endpoint = env("OTEL_URL")
+        auth     = otelcol.auth.basic.default.handler
+    }
+}
+
+otelcol.auth.basic "default" {
+    username = env("OTEL_USERNAME")
+    password = env("OTEL_PASSWORD")
+}
