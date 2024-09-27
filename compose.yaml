@@ -1,9 +1,10 @@
-name: odoo
+name: monitoring
 services:
   odoo:
     build: ./odoo
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://alloy:4317"
+      ODOO_ENVIRONMENT: "development"
       ODOO_INSTRUMENT_LOGS: "1"
       ODOO_INSTRUMENT_METRICS: "1"
       ODOO_INSTRUMENT_LIBRARIES: ""

@@ -41,13 +41,23 @@ def post_load():
         return
 
     if odoo.evented:
-        _logger.warning("Evented mode unsupported")
+        odoo_patch_gevent()
     elif odoo.tools.config["workers"]:
         odoo_patch_prefork()
     else:
         _logger.warning("Threaded mode unsupported")
 
 # https://github.com/odoo/odoo/blob/16.0/odoo/service/server.py
+def odoo_patch_gevent():
+    resource = otel_create_resource()
+    otel_configure_metrics_provider(resource)
+    otel_metrics = metrics.get_meter("odoo")
+    otel_deployment_info = otel_metrics.create_observable_gauge(
+        "odoo.deployment_info",
+        description="Basic deployment information / presence check",
+        callbacks=[lambda _: (yield metrics.Observation(1, {"major_version": odoo.release.major_version}))]
+    )
+
 # https://grafana.com/docs/grafana-cloud/monitor-applications/application-observability/instrument/python/#global-interpreter-lock
 def odoo_patch_prefork():
     def http_run(self):
@@ -82,10 +92,10 @@ def otel_configure_providers():
 def otel_create_resource():
     attributes = {
         "service.name": "odoo",
-        "service.namespace": "localhost",
+        "service.namespace": os.uname().nodename,
         "service.version": odoo.release.version,
-        "service.instance.id": str(uuid4()),
-        "deployment.environment": "staging",
+        "service.instance.id": str(uuid4()), # Do we want this?
+        "deployment.environment": os.environ.get("ODOO_ENVIRONMENT", "unknown"),
         "worker": os.getpid(),
     }
     resource = Resource.create(attributes)
@@ -147,9 +157,18 @@ def otel_instrument_logs():
 # https://github.com/odoo/odoo/blob/16.0/odoo/netsvc.py
 def otel_instrument_http_metrics():
     otel_metrics = metrics.get_meter("odoo")
-    otel_query_count = otel_metrics.create_gauge("odoo.query_count", description="Number of SQL queries performed during the request")
-    otel_query_time = otel_metrics.create_gauge("odoo.query_time", description="Time spent performing SQL queries during the request")
-    otel_remaining_time = otel_metrics.create_gauge("odoo.remaining_time", description="Time spent not performing SQL queries during the request")
+    otel_query_count = otel_metrics.create_gauge(
+        "odoo.query_count",
+        description="Number of SQL queries performed during the request"
+    )
+    otel_query_time = otel_metrics.create_gauge(
+        "odoo.query_time",
+        description="Time spent performing SQL queries during the request"
+    )
+    otel_remaining_time = otel_metrics.create_gauge(
+        "odoo.remaining_time",
+        description="Time spent not performing SQL queries during the request"
+    )
 
     class MetricsFilter(PerfFilter):
         def filter(self, record):
