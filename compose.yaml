@@ -17,9 +17,12 @@ services:
       traefik.http.routers.longpolling.service: longpolling
     volumes:
       - odoo-data:/var/lib/odoo
+      - ./odoo/config:/etc/odoo
+      - ./odoo/addons:/mnt/extra-addons
     hostname: localhost
     depends_on:
       - postgres
+      - alloy
       - traefik
     restart: unless-stopped
 
@@ -60,7 +63,6 @@ services:
       - ./grafana/alloy/applications.alloy:/etc/alloy/config.alloy
     hostname: localhost
     depends_on:
-      - odoo
       - postgres
       - traefik
     restart: unless-stopped
