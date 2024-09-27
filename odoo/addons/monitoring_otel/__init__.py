@@ -20,10 +20,6 @@ from opentelemetry.instrumentation.wsgi import OpenTelemetryMiddleware
 from opentelemetry.instrumentation.psycopg2 import Psycopg2Instrumentor
 
 import odoo
-import odoo.http
-from odoo.http import Application
-from odoo.tools import config
-from odoo.release import version
 from odoo.netsvc import (
     PerfFilter,
     DBFormatter,
@@ -38,11 +34,15 @@ from odoo.service.server import (
 
 _logger = logging.getLogger(__name__)
 
-# TODO: ensure module is present in server_wide_modules
 def post_load():
+    module = __name__.split(".")[-1]
+    if module not in odoo.conf.server_wide_modules:
+        _logger.error("Module not loaded as server-wide, aborting")
+        return
+
     if odoo.evented:
         _logger.warning("Evented mode unsupported")
-    elif config["workers"]:
+    elif odoo.tools.config["workers"]:
         odoo_patch_prefork()
     else:
         _logger.warning("Threaded mode unsupported")
@@ -83,7 +83,7 @@ def otel_create_resource():
     attributes = {
         "service.name": "odoo",
         "service.namespace": "localhost",
-        "service.version": version,
+        "service.version": odoo.release.version,
         "service.instance.id": str(uuid4()),
         "deployment.environment": "staging",
         "worker": os.getpid(),
@@ -120,7 +120,7 @@ def otel_instrument_libraries(libraries):
 # https://opentelemetry-python-contrib.readthedocs.io/en/latest/instrumentation/wsgi/wsgi.html
 def otel_instrument_wsgi():
     os.environ["OTEL_SEMCONV_STABILITY_OPT_IN"] = "http"
-    PatchedApplication = type("PatchedApplication", (OpenTelemetryMiddleware, Application), {})
+    PatchedApplication = type("PatchedApplication", (OpenTelemetryMiddleware, odoo.http.Application), {})
     odoo.http.root = PatchedApplication(odoo.http.root)
 
 # https://github.com/open-telemetry/opentelemetry-python-contrib/tree/main/instrumentation/opentelemetry-instrumentation-psycopg2/src/opentelemetry/instrumentation/psycopg2
