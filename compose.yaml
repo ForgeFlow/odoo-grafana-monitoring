@@ -68,6 +68,24 @@ services:
       - traefik
     restart: unless-stopped
 
+  #https://docs.locust.io/en/stable/running-in-docker.html
+  locust:
+    image: locustio/locust:latest
+    labels:
+      traefik.enable: true
+      traefik.http.services.locust.loadbalancer.server.port: 8089
+      traefik.http.routers.locust.rule: Host(`locust.localhost`)
+      traefik.http.routers.locust.service: locust
+    volumes:
+      - ./locust/entrypoint.py:/entrypoint.py
+    entrypoint:
+      - "/entrypoint.py"
+    depends_on:
+      - odoo
+      - traefik
+    restart: unless-stopped
+
+  # https://doc.traefik.io/traefik/getting-started/quick-start/
   traefik:
     image: traefik:v3.1.3
     command:
