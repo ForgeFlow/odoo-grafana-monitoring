@@ -129,8 +129,15 @@ def otel_instrument_psycopg2():
     Psycopg2Instrumentor().instrument()
 
 def otel_instrument_logs():
+    # https://github.com/open-telemetry/opentelemetry-python/issues/3389
+    class CustomHandler(LoggingHandler):
+        def emit(self, record):
+            if isinstance(record.msg, Exception):
+                record.msg = str(record.msg)
+            super().emit(record)
+
     formatter = DBFormatter("%(asctime)s %(pid)s %(levelname)s %(dbname)s %(name)s: %(message)s %(perf_info)s")
-    handler = LoggingHandler()
+    handler = CustomHandler()
     handler.setFormatter(formatter)
     root_logger = logging.getLogger()
     root_logger.addHandler(handler)
