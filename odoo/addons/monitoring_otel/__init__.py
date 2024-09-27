@@ -42,7 +42,7 @@ _logger = logging.getLogger(__name__)
 def post_load():
     if odoo.evented:
         _logger.warning("Evented mode unsupported")
-    elif config['workers']:
+    elif config["workers"]:
         odoo_patch_prefork()
     else:
         _logger.warning("Threaded mode unsupported")
@@ -57,7 +57,7 @@ def odoo_patch_prefork():
         if os.environ.get("ODOO_INSTRUMENT_METRICS"):
             otel_instrument_http_metrics()
         if os.environ.get("ODOO_INSTRUMENT_LIBRARIES"):
-            otel_instrument_libraries()
+            otel_instrument_libraries(os.environ["ODOO_INSTRUMENT_LIBRARIES"])
         Worker.run(self)
 
     def cron_run(self):
@@ -67,7 +67,7 @@ def odoo_patch_prefork():
         if os.environ.get("ODOO_INSTRUMENT_METRICS"):
             otel_instrument_cron_metrics()
         if os.environ.get("ODOO_INSTRUMENT_LIBRARIES"):
-            otel_instrument_libraries()
+            otel_instrument_libraries(os.environ["ODOO_INSTRUMENT_LIBRARIES"])
         Worker.run(self)
 
     WorkerHTTP.run = http_run
@@ -106,15 +106,14 @@ def otel_configure_traces_provider(resource):
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
     trace.set_tracer_provider(provider)
 
-# TODO: allow configuring which libraries are instrumented
-def otel_instrument_libraries():
-    otel_instrument_psycopg2()
-    otel_instrument_wsgi()
-
-# https://github.com/open-telemetry/opentelemetry-python-contrib/tree/main/instrumentation/opentelemetry-instrumentation-psycopg2/src/opentelemetry/instrumentation/psycopg2
-# https://opentelemetry-python-contrib.readthedocs.io/en/latest/instrumentation/psycopg2/psycopg2.html
-def otel_instrument_psycopg2():
-    Psycopg2Instrumentor().instrument()
+def otel_instrument_libraries(libraries):
+    libraries = libraries.split(",")
+    for library in libraries:
+        if library in otel_library_instrumentation:
+            _logger.info(f"Instrumenting library '{library}'")
+            otel_library_instrumentation[library]()
+        else:
+            _logger.warning(f"Instrumentation for library '{library}' not found")
 
 # https://github.com/odoo/odoo/blob/16.0/odoo/http.py
 # https://github.com/open-telemetry/opentelemetry-python-contrib/tree/main/instrumentation/opentelemetry-instrumentation-wsgi/src/opentelemetry/instrumentation/wsgi
@@ -124,8 +123,13 @@ def otel_instrument_wsgi():
     PatchedApplication = type("PatchedApplication", (OpenTelemetryMiddleware, Application), {})
     odoo.http.root = PatchedApplication(odoo.http.root)
 
+# https://github.com/open-telemetry/opentelemetry-python-contrib/tree/main/instrumentation/opentelemetry-instrumentation-psycopg2/src/opentelemetry/instrumentation/psycopg2
+# https://opentelemetry-python-contrib.readthedocs.io/en/latest/instrumentation/psycopg2/psycopg2.html
+def otel_instrument_psycopg2():
+    Psycopg2Instrumentor().instrument()
+
 def otel_instrument_logs():
-    formatter = DBFormatter('%(asctime)s %(pid)s %(levelname)s %(dbname)s %(name)s: %(message)s %(perf_info)s')
+    formatter = DBFormatter("%(asctime)s %(pid)s %(levelname)s %(dbname)s %(name)s: %(message)s %(perf_info)s")
     handler = LoggingHandler()
     handler.setFormatter(formatter)
     root_logger = logging.getLogger()
@@ -152,14 +156,18 @@ def otel_instrument_http_metrics():
                 otel_remaining_time.set(remaining_time)
             return super().filter(record)
 
-    werkzeug_logger = logging.getLogger('werkzeug')
+    werkzeug_logger = logging.getLogger("werkzeug")
     for filt in werkzeug_logger.filters:
         if isinstance(filt, PerfFilter):
             werkzeug_logger.removeFilter(filt)
 
     metrics_filter = MetricsFilter()
-    logging.getLogger('werkzeug').addFilter(metrics_filter)
+    logging.getLogger("werkzeug").addFilter(metrics_filter)
 
 # TODO: measure cron duration, failures, etc.
 def otel_instrument_cron_metrics():
     pass
+
+otel_library_instrumentation = {}
+otel_library_instrumentation["wsgi"] = otel_instrument_wsgi
+otel_library_instrumentation["psycopg2"] = otel_instrument_psycopg2
