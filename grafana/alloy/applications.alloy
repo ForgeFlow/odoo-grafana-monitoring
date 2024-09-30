@@ -107,7 +107,8 @@ otelcol.processor.transform "otel" {
     metric_statements {
         context    = "datapoint"
         statements = [
-            "set(attributes[\"deployment.name\"], resource.attributes[\"service.namespace\"])",
+            "set(attributes[\"service.namespace\"], resource.attributes[\"service.namespace\"])",
+            "set(attributes[\"service.version\"], resource.attributes[\"service.version\"])",
             "set(attributes[\"deployment.environment\"], resource.attributes[\"deployment.environment\"])",
         ]
     }

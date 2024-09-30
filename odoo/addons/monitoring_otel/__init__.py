@@ -5,6 +5,7 @@ import logging
 import threading
 from uuid import uuid4
 
+from werkzeug.serving import WSGIRequestHandler
 from opentelemetry import _logs, metrics, trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
@@ -20,11 +21,7 @@ from opentelemetry.instrumentation.wsgi import OpenTelemetryMiddleware
 from opentelemetry.instrumentation.psycopg2 import Psycopg2Instrumentor
 
 import odoo
-from odoo.netsvc import (
-    PerfFilter,
-    DBFormatter,
-    WatchedFileHandler,
-)
+from odoo.netsvc import DBFormatter
 from odoo.service.server import (
     PreforkServer,
     Worker,
@@ -55,7 +52,7 @@ def odoo_patch_gevent():
     otel_deployment_info = otel_metrics.create_observable_gauge(
         "odoo.deployment_info",
         description="Basic deployment information / presence check",
-        callbacks=[lambda _: (yield metrics.Observation(1, {"major_version": odoo.release.major_version}))]
+        callbacks=[lambda _: (yield metrics.Observation(1))]
     )
 
 # https://grafana.com/docs/grafana-cloud/monitor-applications/application-observability/instrument/python/#global-interpreter-lock
@@ -93,7 +90,7 @@ def otel_create_resource():
     attributes = {
         "service.name": "odoo",
         "service.namespace": os.uname().nodename,
-        "service.version": odoo.release.version,
+        "service.version": odoo.release.major_version,
         "service.instance.id": str(uuid4()), # Do we want this?
         "deployment.environment": os.environ.get("ODOO_ENVIRONMENT", "unknown"),
         "worker": os.getpid(),
@@ -125,6 +122,7 @@ def otel_instrument_libraries(libraries):
         else:
             _logger.warning(f"Instrumentation for library '{library}' not found")
 
+# FIXME: not working anymore
 # https://github.com/odoo/odoo/blob/16.0/odoo/http.py
 # https://github.com/open-telemetry/opentelemetry-python-contrib/tree/main/instrumentation/opentelemetry-instrumentation-wsgi/src/opentelemetry/instrumentation/wsgi
 # https://opentelemetry-python-contrib.readthedocs.io/en/latest/instrumentation/wsgi/wsgi.html
@@ -154,9 +152,13 @@ def otel_instrument_logs():
     # Ensure our handler processes records before the default handler adds colors
     root_logger.addHandler(root_logger.handlers.pop(0))
 
-# https://github.com/odoo/odoo/blob/16.0/odoo/netsvc.py
+# https://github.com/odoo/odoo/blob/16.0/odoo/http.py
 def otel_instrument_http_metrics():
     otel_metrics = metrics.get_meter("odoo")
+    otel_requests_total = otel_metrics.create_counter(
+        "odoo.requests_total",
+        description="Number of HTTP requests received"
+    )
     otel_query_count = otel_metrics.create_gauge(
         "odoo.query_count",
         description="Number of SQL queries performed during the request"
@@ -170,27 +172,51 @@ def otel_instrument_http_metrics():
         description="Time spent not performing SQL queries during the request"
     )
 
-    class MetricsFilter(PerfFilter):
-        def filter(self, record):
-            if hasattr(threading.current_thread(), "query_count"):
-                query_count = threading.current_thread().query_count
-                query_time = threading.current_thread().query_time
-                perf_t0 = threading.current_thread().perf_t0
-                remaining_time = time.time() - perf_t0 - query_time
-                otel_query_count.set(query_count)
-                otel_query_time.set(query_time)
-                otel_remaining_time.set(remaining_time)
-            return super().filter(record)
+    last_status = None
+    last_rule = None
 
-    werkzeug_logger = logging.getLogger("werkzeug")
-    for filt in werkzeug_logger.filters:
-        if isinstance(filt, PerfFilter):
-            werkzeug_logger.removeFilter(filt)
+    wsgi_send_response = WSGIRequestHandler.send_response
+    dispatcher_pre_dispatch = odoo.http.Dispatcher.pre_dispatch
+    application_call = odoo.http.Application.__call__
 
-    metrics_filter = MetricsFilter()
-    logging.getLogger("werkzeug").addFilter(metrics_filter)
+    def send_response(self, code, message):
+        nonlocal last_status
+        last_status = str(code)
+        return wsgi_send_response(self, code, message)
 
-# TODO: measure cron duration, failures, etc.
+    def pre_dispatch(self, rule, args):
+        nonlocal last_rule
+        last_rule = rule.rule
+        dispatcher_pre_dispatch(self, rule, args)
+
+    def __call__(self, environ, start_response):
+        nonlocal last_rule, last_status
+        response = application_call(self, environ, start_response)
+
+        query_count = threading.current_thread().query_count
+        query_time = threading.current_thread().query_time
+        perf_t0 = threading.current_thread().perf_t0
+        remaining_time = time.time() - perf_t0 - query_time
+
+        otel_requests_total.add(1, {
+            "request.path": last_rule or "unknown",
+            "response.status": last_status or "unknown"
+        })
+        otel_query_count.set(query_count)
+        otel_query_time.set(query_time)
+        otel_remaining_time.set(remaining_time)
+
+        last_rule = None
+        last_status = None
+
+        return response
+
+    # TODO: find a cleaner way to patch
+    WSGIRequestHandler.send_response = send_response
+    odoo.http.Dispatcher.pre_dispatch = pre_dispatch
+    odoo.http.Application.__call__ = __call__
+
+# TODO: measure cron duration, failures, long running crons, etc.
 def otel_instrument_cron_metrics():
     pass
 
