@@ -23,13 +23,17 @@ class BasicUser(HttpUser):
         iterations = random.randrange(100, 10000)
         self.client.get(f"/dummy/database/{iterations}")
 
-    @task(2)
+    @task(1)
     def dummy_pass(self):
         self.client.get("/dummy/pass")
 
     @task(1)
-    def dummy_error(self):
-        self.client.get("/dummy/error")
+    def dummy_log_warning(self):
+        self.client.get("/dummy/log/warning")
+
+    @task(1)
+    def dummy_log_error(self):
+        self.client.get("/dummy/log/error")
 
 # https://docs.locust.io/en/latest/use-as-lib.html
 setup_logging("INFO")

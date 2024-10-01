@@ -24,6 +24,10 @@ class MonitoringDummyController(Controller):
     def dummy_pass(self):
         return "OK"
 
-    @route("/dummy/error", auth="public", methods=["GET"])
-    def dummy_error(self):
-        raise UserError("ERROR")
+    @route("/dummy/log/warning", auth="public", methods=["GET"])
+    def dummy_log_warning(self):
+        raise UserError("This is a UserError")
+
+    @route("/dummy/log/error", auth="public", methods=["GET"])
+    def dummy_log_error(self):
+        raise Exception("This is an Exception")
